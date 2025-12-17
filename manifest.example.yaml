@@ -64,3 +64,13 @@ resources:
     name: php8.1-fpm
     state: running
     enabled: true
+
+# Verification checks (run locally after deployment)
+verify:
+  - name: "PHP response check"
+    command: "curl -sf http://${HOST}/index.php"
+    expect: "Hello, world!"
+  
+  - name: "HTTP status code"
+    command: "curl -sf -o /dev/null -w '%{http_code}' http://${HOST}/index.php"
+    expect: "200"

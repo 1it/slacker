@@ -30,7 +30,7 @@ func init() {
 			level := strings.ToUpper(fmt.Sprintf("%s", i))
 			switch level {
 			case "DEBUG":
-				return fmt.Sprintf("%s%sDBG%s", colorDim, colorCyan, colorReset)
+				return fmt.Sprintf("%s%sSKIP%s", colorDim, colorCyan, colorReset)
 			case "INFO":
 				return fmt.Sprintf("%s%sRUN%s", colorBold, colorGreen, colorReset)
 			case "WARN":

@@ -56,7 +56,7 @@ func (r *Runner) Apply(ctx context.Context, m *manifest.Manifest) ([]Result, err
 			continue
 		}
 
-		logger.Infof("[%s] %s: checking", handler.Type(), handler.ID())
+		logger.Debugf("[%s] %s: checking", handler.Type(), handler.ID())
 
 		needsChange, err := handler.NeedsChange(ctx, r.exec)
 		if err != nil {
@@ -69,7 +69,7 @@ func (r *Runner) Apply(ctx context.Context, m *manifest.Manifest) ([]Result, err
 		}
 
 		if !needsChange {
-			logger.Infof("[%s] %s: up to date", handler.Type(), handler.ID())
+			logger.Debugf("[%s] %s: up to date", handler.Type(), handler.ID())
 			results = append(results, Result{
 				ID:      handler.ID(),
 				Type:    handler.Type(),
@@ -92,10 +92,11 @@ func (r *Runner) Apply(ctx context.Context, m *manifest.Manifest) ([]Result, err
 			continue
 		}
 
-		logger.Infof("[%s] %s: applying", handler.Type(), handler.ID())
+		logger.Infof("[%s] %s: changed", handler.Type(), handler.ID())
 
 		changed, err := handler.Apply(ctx, r.exec)
 		if err != nil {
+			logger.Errorf(err, "[%s] %s: apply failed", handler.Type(), handler.ID())
 			results = append(results, Result{
 				ID:    handler.ID(),
 				Type:  handler.Type(),

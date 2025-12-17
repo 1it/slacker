@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/1it/slacker/internal/executor"
 	"github.com/1it/slacker/internal/manifest"
@@ -164,11 +165,12 @@ func (f *FileHandler) resolveOwnership(ctx context.Context, exec executor.Execut
 			gid = parsed
 		} else {
 			// getent group returns: name:password:gid:members
-			var gidStr string
-			if _, err := fmt.Sscanf(string(stdout), "%*[^:]:%*[^:]:%s", &gidStr); err != nil {
-				return 0, 0, fmt.Errorf("failed to parse getent output for group %s: %w", f.group, err)
+			// e.g., "root:x:0:"
+			parts := strings.SplitN(string(stdout), ":", 4)
+			if len(parts) < 3 {
+				return 0, 0, fmt.Errorf("failed to parse getent output for group %s: unexpected format", f.group)
 			}
-			parsed, err := strconv.Atoi(gidStr)
+			parsed, err := strconv.Atoi(strings.TrimSpace(parts[2]))
 			if err != nil {
 				return 0, 0, fmt.Errorf("failed to parse gid for %s from getent output: %w", f.group, err)
 			}

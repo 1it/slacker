@@ -7,7 +7,8 @@ resources:
   - type: exec
     name: apt-update
     command: "apt-get update"
-    unless: "test -f /var/lib/apt/periodic/update-success-stamp"
+    # Check if package lists exist and are recent (< 1 hour old)
+    unless: "find /var/lib/apt/lists -maxdepth 1 -name '*_Packages' -mmin -60 | grep -q ."
 
   # Install packages
   - type: package
@@ -41,6 +42,7 @@ resources:
           index index.php index.html;
           
           location ~ \.php$ {
+              include fastcgi_params;
               include snippets/fastcgi-php.conf;
               fastcgi_pass unix:/var/run/php/php-fpm.sock;
           }
@@ -48,7 +50,7 @@ resources:
     owner: root
     group: root
     mode: "0644"
-    notifies: service:nginx:restart
+    notifies: service:nginx:reload
 
   # Services
   - type: service

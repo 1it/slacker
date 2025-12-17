@@ -11,13 +11,22 @@ import (
 type Manifest struct {
 	Hosts     []Host     `yaml:"hosts"`
 	Resources []Resource `yaml:"resources"`
+	Verify    []Verify   `yaml:"verify,omitempty"`
+}
+
+// Verify represents a verification check to run after deployment
+type Verify struct {
+	Name    string `yaml:"name"`             // Human-readable name
+	Command string `yaml:"command"`          // Command to run (supports ${HOST} placeholder)
+	Expect  string `yaml:"expect,omitempty"` // Expected substring in output
 }
 
 // Host represents a target server configuration
 type Host struct {
 	Address  string `yaml:"address"`
 	User     string `yaml:"user"`
-	Password string `yaml:"password"`
+	Password string `yaml:"password,omitempty"`
+	Key      string `yaml:"key,omitempty"` // Path to SSH private key (auto-detected if empty)
 }
 
 // Resource represents a resource to be applied

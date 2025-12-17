@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/1it/slacker/internal/executor"
 	"github.com/1it/slacker/internal/logger"
@@ -139,12 +140,12 @@ func (r *Runner) Apply(ctx context.Context, m *manifest.Manifest) ([]Result, err
 // executeNotification parses and executes a notification string
 // Format: "service:name:action" e.g., "service:nginx:restart"
 func (r *Runner) executeNotification(ctx context.Context, notify string) error {
-	var resourceType, name, action string
-	_, err := fmt.Sscanf(notify, "%[^:]:%[^:]:%s", &resourceType, &name, &action)
-	if err != nil {
-		return fmt.Errorf("invalid notification format %q: %w", notify, err)
+	parts := strings.SplitN(notify, ":", 3)
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid notification format %q: expected 'type:name:action'", notify)
 	}
 
+	resourceType, name, action := parts[0], parts[1], parts[2]
 	logger.Infof("Executing notification: %s %s %s", resourceType, name, action)
 
 	switch resourceType {

@@ -1,0 +1,72 @@
+hosts:
+  - address: "192.168.86.155:22"
+    user: "root"
+
+resources:
+  # Update apt cache first
+  - type: exec
+    name: apt-update
+    command: "apt-get update"
+    unless: "test -f /var/lib/apt/periodic/update-success-stamp"
+
+  # Install packages
+  - type: package
+    name: nginx
+    state: installed
+    notifies: service:nginx:restart
+
+  - type: package
+    name: php-fpm
+    state: installed
+    notifies: service:php-fpm:restart
+
+  # PHP application
+  - type: file
+    path: /var/www/html/index.php
+    content: |
+      <?php
+      header("Content-Type: text/plain");
+      echo "Hello, world!\n";
+    owner: www-data
+    group: www-data
+    mode: "0644"
+
+  # Nginx config for PHP
+  - type: file
+    path: /etc/nginx/sites-available/default
+    content: |
+      server {
+          listen 80 default_server;
+          root /var/www/html;
+          index index.php index.html;
+          
+          location ~ \.php$ {
+              include snippets/fastcgi-php.conf;
+              fastcgi_pass unix:/var/run/php/php-fpm.sock;
+          }
+      }
+    owner: root
+    group: root
+    mode: "0644"
+    notifies: service:nginx:restart
+
+  # Services
+  - type: service
+    name: nginx
+    state: running
+    enabled: true
+
+  - type: service
+    name: php8.2-fpm
+    state: running
+    enabled: true
+
+# Verification checks (run locally after deployment)
+verify:
+  - name: "PHP response check"
+    command: "curl -sf http://${HOST}/index.php"
+    expect: "Hello, world!"
+  
+  - name: "HTTP status code"
+    command: "curl -sf -o /dev/null -w '%{http_code}' http://${HOST}/index.php"
+    expect: "200"

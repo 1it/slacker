@@ -25,6 +25,7 @@ type Resource struct {
 	Type     string `yaml:"type"`
 	Name     string `yaml:"name"`
 	Command  string `yaml:"command,omitempty"`
+	Unless   string `yaml:"unless,omitempty"`
 	Content  string `yaml:"content,omitempty"`
 	Owner    string `yaml:"owner,omitempty"`
 	Path     string `yaml:"path,omitempty"`

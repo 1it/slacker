@@ -1,0 +1,60 @@
+# Full nginx + PHP test (for Docker or remote servers)
+resources:
+  # Update apt cache
+  - type: exec
+    name: apt-update
+    command: "apt-get update"
+    unless: "test -f /var/cache/apt/pkgcache.bin"
+
+  # Install packages
+  - type: package
+    name: nginx
+    state: installed
+
+  - type: package
+    name: php-fpm
+    state: installed
+
+  # PHP application
+  - type: file
+    name: index-php
+    path: /var/www/html/index.php
+    content: |
+      <?php
+      header("Content-Type: text/plain");
+      echo "Hello, world!\n";
+    owner: www-data
+    group: www-data
+    mode: "0644"
+
+  # Nginx config for PHP
+  - type: file
+    name: nginx-config
+    path: /etc/nginx/sites-available/default
+    content: |
+      server {
+          listen 80 default_server;
+          root /var/www/html;
+          index index.php index.html;
+          
+          location ~ \.php$ {
+              include snippets/fastcgi-php.conf;
+              fastcgi_pass unix:/var/run/php/php-fpm.sock;
+          }
+      }
+    owner: root
+    group: root
+    mode: "0644"
+    notifies: service:nginx:restart
+
+  # Services
+  - type: service
+    name: nginx
+    state: running
+    enabled: true
+
+  - type: service
+    name: php8.1-fpm
+    state: running
+    enabled: true
+

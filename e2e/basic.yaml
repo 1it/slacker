@@ -1,0 +1,22 @@
+# Basic e2e test - package and file resources
+resources:
+  # Update apt cache
+  - type: exec
+    name: apt-update
+    command: "apt-get update"
+    unless: "test -f /var/cache/apt/pkgcache.bin"
+
+  # Install a simple package
+  - type: package
+    name: curl
+    state: installed
+
+  # Create a test file
+  - type: file
+    name: test-file
+    path: /tmp/slacker-test.txt
+    content: |
+      Hello from slacker!
+      This file was created by the configuration management tool.
+    mode: "0644"
+

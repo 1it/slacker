@@ -1,0 +1,36 @@
+# Multi-stage Dockerfile for e2e testing
+# Stage 1: Build the binary
+FROM golang:1.25-bookworm AS builder
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o slacker .
+
+# Stage 2: Run tests
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Copy binary from builder
+COPY --from=builder /app/slacker /usr/local/bin/slacker
+
+# Copy test manifests
+COPY e2e/ /e2e/
+
+# Run tests
+CMD ["/bin/bash", "-c", "\
+    echo '=== Test 1: Basic resources ===' && \
+    slacker local -c /e2e/basic.yaml && \
+    echo '' && \
+    echo '=== Test 2: Idempotency check ===' && \
+    slacker local -c /e2e/basic.yaml && \
+    echo '' && \
+    echo '=== Verification ===' && \
+    which curl && \
+    cat /tmp/slacker-test.txt && \
+    echo '' && \
+    echo '=== All tests passed ===' \
+"]

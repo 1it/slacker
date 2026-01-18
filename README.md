@@ -48,7 +48,7 @@ A lightweight configuration management tool written in Go, inspired by Puppet/Ch
 
 ### Prerequisites
 
-- Go 1.21+ (for building from source)
+- Go 1.25+ (for building from source)
 - SSH access to target servers (for remote execution)
 - Ubuntu/Debian target systems (uses apt-get and systemctl)
 

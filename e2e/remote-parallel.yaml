@@ -1,7 +1,8 @@
 hosts:
-  - address: "192.168.86.155:22"
+  # Replace with your actual test servers for parallel testing
+  - address: "192.0.2.100:22"
     user: "root"
-  - address: "49.12.75.141:22"
+  - address: "192.0.2.101:22"
     user: "root"
 
 resources:

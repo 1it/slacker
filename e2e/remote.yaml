@@ -1,5 +1,6 @@
 hosts:
-  - address: "192.168.86.155:22"
+  # Replace with your actual test server
+  - address: "192.0.2.100:22"
     user: "root"
 
 resources:

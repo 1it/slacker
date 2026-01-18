@@ -6,11 +6,14 @@ A lightweight configuration management tool written in Go, inspired by Puppet/Ch
 
 - **Idempotent operations** - Resources are only modified when needed
 - **Local and remote execution** - Apply configurations locally or via SSH
+- **Parallel host processing** - Process multiple hosts concurrently with `--parallel`
 - **SSH key auto-detection** - Automatically uses `~/.ssh/` keys when no password is set
-- **YAML-based manifests** - Declarative configuration format
+- **SSH host key verification** - Strict mode, accept-new mode, or insecure (default)
+- **YAML-based manifests** - Declarative configuration format with validation
 - **Notification system** - Trigger service restarts on config changes
 - **Dry-run mode** - Preview changes before applying
 - **Post-deployment verification** - Validate deployments with custom checks (curl, etc.)
+- **User management** - Create, modify, and delete system users
 
 ## Architecture
 
@@ -115,6 +118,21 @@ By default, hosts are processed sequentially. Use `--parallel` to process multip
 
 **Example**: Processing 20 hosts with parallelism=5 will create 5 concurrent SSH connections, completing in roughly 1/4 the time of sequential processing.
 
+#### Host Key Verification
+
+By default, host key verification is disabled for backward compatibility. Enable it for production:
+
+```bash
+# Strict mode - hosts must be in known_hosts
+./slacker remote -c manifest.yaml --strict-host-keys
+
+# Accept new hosts, reject changed keys (recommended)
+./slacker remote -c manifest.yaml --accept-new-keys
+
+# Custom known_hosts file
+./slacker remote -c manifest.yaml --strict-host-keys --known-hosts ~/.ssh/known_hosts_prod
+```
+
 ## SSH Authentication
 
 Slacker supports multiple SSH authentication methods with automatic fallback:
@@ -200,6 +218,33 @@ resources:
 ```
 
 ## Resource Types
+
+### User Resource
+
+Manages system users.
+
+| Field | Description | Required |
+|-------|-------------|----------|
+| `name` | Username | Yes |
+| `state` | `present` or `absent` | No (default: present) |
+| `uid` | User ID | No (auto-assigned) |
+| `gid` | Primary group ID | No (auto-assigned) |
+| `home` | Home directory path | No (default: /home/<name>) |
+| `shell` | Login shell | No (default: /bin/bash) |
+| `system` | Create as system user | No (default: false) |
+| `notifies` | Notification target | No |
+
+**Idempotency**: Checks if user exists and if properties match.
+
+```yaml
+resources:
+  - type: user
+    name: appuser
+    uid: 1500
+    home: /opt/app
+    shell: /bin/bash
+    state: present
+```
 
 ### File Resource
 

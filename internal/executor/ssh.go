@@ -3,8 +3,10 @@ package executor
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // Common SSH key paths to check (in order of preference)
@@ -20,6 +23,24 @@ var defaultKeyPaths = []string{
 	"~/.ssh/id_ecdsa",
 	"~/.ssh/id_rsa",
 	"~/.ssh/id_dsa",
+}
+
+// HostKeyMode controls how SSH host keys are verified
+type HostKeyMode int
+
+const (
+	// HostKeyIgnore disables host key verification (insecure, default for backward compatibility)
+	HostKeyIgnore HostKeyMode = iota
+	// HostKeyStrict requires host to be in known_hosts file
+	HostKeyStrict
+	// HostKeyAcceptNew accepts new hosts and adds them to known_hosts, but rejects changed keys
+	HostKeyAcceptNew
+)
+
+// SSHOptions configures SSH connection behavior
+type SSHOptions struct {
+	HostKeyMode    HostKeyMode
+	KnownHostsFile string // defaults to ~/.ssh/known_hosts
 }
 
 // SSHExecutor executes commands on remote hosts via SSH
@@ -36,6 +57,13 @@ type SSHExecutor struct {
 // 2. Explicit key path (if provided)
 // 3. Auto-detect keys from ~/.ssh/
 func NewSSHExecutor(host, user, password, keyPath string) (*SSHExecutor, error) {
+	return NewSSHExecutorWithOptions(host, user, password, keyPath, SSHOptions{
+		HostKeyMode: HostKeyIgnore, // backward compatible default
+	})
+}
+
+// NewSSHExecutorWithOptions creates a new SSH executor with custom options
+func NewSSHExecutorWithOptions(host, user, password, keyPath string, opts SSHOptions) (*SSHExecutor, error) {
 	authMethods, authDesc, err := buildAuthMethods(password, keyPath)
 	if err != nil {
 		return nil, err
@@ -45,10 +73,15 @@ func NewSSHExecutor(host, user, password, keyPath string) (*SSHExecutor, error) 
 		return nil, fmt.Errorf("no authentication method available for %s@%s", user, host)
 	}
 
+	hostKeyCallback, err := buildHostKeyCallback(host, opts)
+	if err != nil {
+		return nil, err
+	}
+
 	config := &ssh.ClientConfig{
 		User:            user,
 		Auth:            authMethods,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		HostKeyCallback: hostKeyCallback,
 		Timeout:         10 * time.Second,
 	}
 
@@ -69,6 +102,102 @@ func NewSSHExecutor(host, user, password, keyPath string) (*SSHExecutor, error) 
 		client:     client,
 		sftpClient: sftpClient,
 	}, nil
+}
+
+// buildHostKeyCallback creates the appropriate host key callback based on options
+func buildHostKeyCallback(host string, opts SSHOptions) (ssh.HostKeyCallback, error) {
+	switch opts.HostKeyMode {
+	case HostKeyIgnore:
+		return ssh.InsecureIgnoreHostKey(), nil
+
+	case HostKeyStrict:
+		knownHostsPath := opts.KnownHostsFile
+		if knownHostsPath == "" {
+			knownHostsPath = expandPath("~/.ssh/known_hosts")
+		} else {
+			knownHostsPath = expandPath(knownHostsPath)
+		}
+
+		callback, err := knownhosts.New(knownHostsPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load known_hosts from %s: %w", knownHostsPath, err)
+		}
+		return callback, nil
+
+	case HostKeyAcceptNew:
+		knownHostsPath := opts.KnownHostsFile
+		if knownHostsPath == "" {
+			knownHostsPath = expandPath("~/.ssh/known_hosts")
+		} else {
+			knownHostsPath = expandPath(knownHostsPath)
+		}
+
+		return acceptNewHostKeyCallback(knownHostsPath, host), nil
+
+	default:
+		return ssh.InsecureIgnoreHostKey(), nil
+	}
+}
+
+// acceptNewHostKeyCallback returns a callback that accepts new hosts but rejects changed keys
+func acceptNewHostKeyCallback(knownHostsPath, targetHost string) ssh.HostKeyCallback {
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		// Try to load existing known_hosts
+		callback, err := knownhosts.New(knownHostsPath)
+		if err != nil {
+			// File doesn't exist or can't be read - accept and save the key
+			if os.IsNotExist(err) {
+				return addHostKey(knownHostsPath, hostname, remote, key)
+			}
+			// For other errors, still try to add the key
+			return addHostKey(knownHostsPath, hostname, remote, key)
+		}
+
+		// Check if host is known
+		err = callback(hostname, remote, key)
+		if err == nil {
+			// Host is known and key matches
+			return nil
+		}
+
+		// Check if it's a "key not found" error (new host) vs "key mismatch" (changed key)
+		var keyErr *knownhosts.KeyError
+		if errors.As(err, &keyErr) {
+			if len(keyErr.Want) == 0 {
+				// Host not in known_hosts - accept and add it
+				return addHostKey(knownHostsPath, hostname, remote, key)
+			}
+			// Host is known but key changed - this is a security concern
+			return fmt.Errorf("host key mismatch for %s: the host key has changed, which could indicate a MITM attack", hostname)
+		}
+
+		return err
+	}
+}
+
+// addHostKey appends a new host key to the known_hosts file
+func addHostKey(knownHostsPath, hostname string, remote net.Addr, key ssh.PublicKey) error {
+	// Ensure directory exists
+	dir := filepath.Dir(knownHostsPath)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("failed to create .ssh directory: %w", err)
+	}
+
+	// Open file for appending (create if doesn't exist)
+	f, err := os.OpenFile(knownHostsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open known_hosts for writing: %w", err)
+	}
+	defer f.Close()
+
+	// Format the known_hosts line
+	// Use the hostname from the address (which includes port if non-standard)
+	line := knownhosts.Line([]string{hostname}, key)
+	if _, err := f.WriteString(line + "\n"); err != nil {
+		return fmt.Errorf("failed to write to known_hosts: %w", err)
+	}
+
+	return nil
 }
 
 // buildAuthMethods constructs SSH auth methods based on available credentials

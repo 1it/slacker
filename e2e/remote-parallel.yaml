@@ -1,0 +1,13 @@
+hosts:
+  - address: "192.168.86.155:22"
+    user: "root"
+  - address: "49.12.75.141:22"
+    user: "root"
+
+resources:
+  # Update apt cache first
+  - type: exec
+    name: apt-update
+    command: "apt-get update"
+    # Check if package lists exist and are recent (< 1 hour old)
+    unless: "find /var/lib/apt/lists -maxdepth 1 -name '*_Packages' -mmin -60 | grep -q ."

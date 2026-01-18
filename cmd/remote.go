@@ -27,6 +27,9 @@ var (
 	skipVerify       bool
 	parallelHosts    int
 	failFast         bool
+	strictHostKeys   bool
+	acceptNewKeys    bool
+	knownHostsFile   string
 )
 
 // remoteCmd represents the remote command
@@ -50,6 +53,11 @@ Example:
 		m, err := manifest.Load(remoteConfigFile)
 		if err != nil {
 			return fmt.Errorf("failed to load manifest: %w", err)
+		}
+
+		// Validate manifest
+		if err := m.Validate(); err != nil {
+			return err
 		}
 
 		logger.Infof("Loaded manifest: %s (%d hosts, %d resources)", remoteConfigFile, len(m.Hosts), len(m.Resources))
@@ -93,6 +101,18 @@ Example:
 			resultsChan     = make(chan hostResult, len(m.Hosts))
 		)
 
+		// Build SSH options
+		sshOpts := executor.SSHOptions{
+			KnownHostsFile: knownHostsFile,
+		}
+		if strictHostKeys {
+			sshOpts.HostKeyMode = executor.HostKeyStrict
+			logger.Infof("Host key verification: strict (hosts must be in known_hosts)")
+		} else if acceptNewKeys {
+			sshOpts.HostKeyMode = executor.HostKeyAcceptNew
+			logger.Infof("Host key verification: accept-new (new hosts added to known_hosts)")
+		}
+
 		// Log execution mode
 		if parallelHosts > 1 {
 			logger.Infof("Processing %d hosts with parallelism=%d (fail-fast=%v)", len(m.Hosts), parallelHosts, failFast)
@@ -105,7 +125,7 @@ Example:
 		for _, host := range m.Hosts {
 			host := host // capture for goroutine
 			g.Go(func() error {
-				result := applyToHost(gctx, host, m, remoteDryRun)
+				result := applyToHost(gctx, host, m, remoteDryRun, sshOpts)
 				resultsChan <- result
 
 				// In fail-fast mode, return error to cancel other goroutines
@@ -174,7 +194,7 @@ Example:
 }
 
 // applyToHost applies the manifest to a single host and returns the result
-func applyToHost(ctx context.Context, host manifest.Host, m *manifest.Manifest, dryRun bool) struct {
+func applyToHost(ctx context.Context, host manifest.Host, m *manifest.Manifest, dryRun bool, sshOpts executor.SSHOptions) struct {
 	host    manifest.Host
 	err     error
 	total   int
@@ -205,8 +225,8 @@ func applyToHost(ctx context.Context, host manifest.Host, m *manifest.Manifest, 
 	}
 	logger.Infof("=== Connecting to %s (user: %s, auth: %s) ===", host.Address, host.User, authMethod)
 
-	// Create SSH executor
-	sshExec, err := executor.NewSSHExecutor(host.Address, host.User, host.Password, host.Key)
+	// Create SSH executor with options
+	sshExec, err := executor.NewSSHExecutorWithOptions(host.Address, host.User, host.Password, host.Key, sshOpts)
 	if err != nil {
 		logger.Errorf(err, "Failed to connect to %s", host.Address)
 		result.err = err
@@ -307,5 +327,8 @@ func init() {
 	remoteCmd.Flags().DurationVar(&remoteTimeout, "timeout", 30*time.Minute, "timeout for the entire operation")
 	remoteCmd.Flags().IntVarP(&parallelHosts, "parallel", "p", 1, "number of hosts to process in parallel (default: 1 = sequential)")
 	remoteCmd.Flags().BoolVar(&failFast, "fail-fast", false, "stop processing on first host failure (only with --parallel > 1)")
+	remoteCmd.Flags().BoolVar(&strictHostKeys, "strict-host-keys", false, "require hosts to be in known_hosts file")
+	remoteCmd.Flags().BoolVar(&acceptNewKeys, "accept-new-keys", false, "accept new host keys and add to known_hosts (reject changed keys)")
+	remoteCmd.Flags().StringVar(&knownHostsFile, "known-hosts", "", "path to known_hosts file (default: ~/.ssh/known_hosts)")
 	_ = remoteCmd.MarkFlagRequired("config")
 }

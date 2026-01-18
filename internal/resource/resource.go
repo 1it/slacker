@@ -28,6 +28,8 @@ func FromManifest(r manifest.Resource) (Handler, error) {
 		return NewServiceHandler(r), nil
 	case "exec":
 		return NewExecHandler(r), nil
+	case "user":
+		return NewUserHandler(r), nil
 	default:
 		return nil, fmt.Errorf("unknown resource type: %s", r.Type)
 	}

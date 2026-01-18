@@ -42,6 +42,11 @@ Example:
 			return fmt.Errorf("failed to load manifest: %w", err)
 		}
 
+		// Validate manifest
+		if err := m.Validate(); err != nil {
+			return err
+		}
+
 		logger.Infof("Loaded manifest: %s (%d resources), timeout: %s", localConfigFile, len(m.Resources), timeout)
 
 		if len(m.Resources) == 0 {

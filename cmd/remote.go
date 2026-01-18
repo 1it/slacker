@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/1it/slacker/internal/executor"
@@ -16,6 +17,7 @@ import (
 	"github.com/1it/slacker/internal/manifest"
 	"github.com/1it/slacker/internal/runner"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 )
 
 var (
@@ -23,6 +25,8 @@ var (
 	remoteDryRun     bool
 	remoteTimeout    time.Duration
 	skipVerify       bool
+	parallelHosts    int
+	failFast         bool
 )
 
 // remoteCmd represents the remote command
@@ -31,11 +35,13 @@ var remoteCmd = &cobra.Command{
 	Short: "Apply configuration to remote hosts via SSH",
 	Long: `Remote applies the configuration manifest to remote hosts defined in the manifest.
 
-Each host is configured sequentially using SSH connections.
+By default, hosts are configured sequentially. Use --parallel to process multiple hosts concurrently.
 
 Example:
   slacker remote -c manifest.yaml
-  slacker remote -c manifest.yaml --dry-run`,
+  slacker remote -c manifest.yaml --dry-run
+  slacker remote -c manifest.yaml --parallel 5
+  slacker remote -c manifest.yaml --parallel 10 --fail-fast`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if remoteConfigFile == "" {
 			return fmt.Errorf("config file is required: use -c or --config")
@@ -63,76 +69,78 @@ Example:
 		ctx, cancel := context.WithTimeout(context.Background(), remoteTimeout)
 		defer cancel()
 
-		// Track overall results
-		var totalHosts, successHosts, failedHosts int
-		hostResults := make(map[string]error)
-		successfulHosts := make([]manifest.Host, 0)
-
-		// Apply to each host sequentially
-		for _, host := range m.Hosts {
-			totalHosts++
-
-			// Determine auth method for logging
-			authMethod := "password"
-			if host.Password == "" {
-				if host.Key != "" {
-					authMethod = fmt.Sprintf("key:%s", host.Key)
-				} else {
-					// Auto-detect
-					keys := executor.DetectSSHKeys()
-					if len(keys) > 0 {
-						authMethod = fmt.Sprintf("auto-key:%s", keys[0])
-					} else {
-						authMethod = "no-auth"
-					}
-				}
-			}
-			logger.Infof("=== Connecting to %s (user: %s, auth: %s) ===", host.Address, host.User, authMethod)
-
-			// Create SSH executor
-			sshExec, err := executor.NewSSHExecutor(host.Address, host.User, host.Password, host.Key)
-			if err != nil {
-				logger.Errorf(err, "Failed to connect to %s", host.Address)
-				hostResults[host.Address] = err
-				failedHosts++
-				continue
-			}
-
-			// Create runner with SSH executor
-			r := runner.New(sshExec).WithDryRun(remoteDryRun)
-
-			// Apply resources
-			results, err := r.Apply(ctx, m)
-
-			// Close connection
-			if closeErr := sshExec.Close(); closeErr != nil {
-				logger.Warnf("Error closing connection to %s: %v", host.Address, closeErr)
-			}
-
-			if err != nil {
-				logger.Errorf(err, "Apply failed on %s", host.Address)
-				hostResults[host.Address] = err
-				failedHosts++
-				continue
-			}
-
-			// Print summary for this host
-			total, changed, failed := runner.Summary(results)
-			if remoteDryRun {
-				logger.Infof("[%s] Dry-run complete: total=%d would_change=%d failed=%d", host.Address, total, changed, failed)
-			} else {
-				logger.Infof("[%s] Complete: total=%d changed=%d failed=%d", host.Address, total, changed, failed)
-			}
-
-			if failed > 0 {
-				hostResults[host.Address] = fmt.Errorf("%d resources failed", failed)
-				failedHosts++
-			} else {
-				hostResults[host.Address] = nil
-				successHosts++
-				successfulHosts = append(successfulHosts, host)
-			}
+		// Validate parallel flag
+		if parallelHosts < 1 {
+			parallelHosts = 1
 		}
+		if parallelHosts > len(m.Hosts) {
+			parallelHosts = len(m.Hosts)
+		}
+
+		// Thread-safe result collection
+		type hostResult struct {
+			host    manifest.Host
+			err     error
+			total   int
+			changed int
+			failed  int
+		}
+
+		var (
+			mu              sync.Mutex
+			hostResults     = make(map[string]error)
+			successfulHosts = make([]manifest.Host, 0)
+			resultsChan     = make(chan hostResult, len(m.Hosts))
+		)
+
+		// Log execution mode
+		if parallelHosts > 1 {
+			logger.Infof("Processing %d hosts with parallelism=%d (fail-fast=%v)", len(m.Hosts), parallelHosts, failFast)
+		}
+
+		// Process hosts
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(parallelHosts)
+
+		for _, host := range m.Hosts {
+			host := host // capture for goroutine
+			g.Go(func() error {
+				result := applyToHost(gctx, host, m, remoteDryRun)
+				resultsChan <- result
+
+				// In fail-fast mode, return error to cancel other goroutines
+				if failFast && result.err != nil {
+					return result.err
+				}
+				return nil
+			})
+		}
+
+		// Wait for all goroutines and close results channel
+		go func() {
+			_ = g.Wait()
+			close(resultsChan)
+		}()
+
+		// Collect results
+		for result := range resultsChan {
+			mu.Lock()
+			hostResults[result.host.Address] = result.err
+			if result.err == nil {
+				successfulHosts = append(successfulHosts, result.host)
+			}
+			mu.Unlock()
+		}
+
+		// Wait for errgroup to fully complete
+		if err := g.Wait(); err != nil && failFast {
+			logger.Warnf("Execution stopped due to fail-fast: %v", err)
+		}
+
+		// Calculate totals
+		totalHosts := len(m.Hosts)
+		successHosts := len(successfulHosts)
+		failedHosts := totalHosts - successHosts
 
 		// Print overall summary
 		logger.Infof("=== Summary ===")
@@ -163,6 +171,80 @@ Example:
 
 		return nil
 	},
+}
+
+// applyToHost applies the manifest to a single host and returns the result
+func applyToHost(ctx context.Context, host manifest.Host, m *manifest.Manifest, dryRun bool) struct {
+	host    manifest.Host
+	err     error
+	total   int
+	changed int
+	failed  int
+} {
+	result := struct {
+		host    manifest.Host
+		err     error
+		total   int
+		changed int
+		failed  int
+	}{host: host}
+
+	// Determine auth method for logging
+	authMethod := "password"
+	if host.Password == "" {
+		if host.Key != "" {
+			authMethod = fmt.Sprintf("key:%s", host.Key)
+		} else {
+			keys := executor.DetectSSHKeys()
+			if len(keys) > 0 {
+				authMethod = fmt.Sprintf("auto-key:%s", keys[0])
+			} else {
+				authMethod = "no-auth"
+			}
+		}
+	}
+	logger.Infof("=== Connecting to %s (user: %s, auth: %s) ===", host.Address, host.User, authMethod)
+
+	// Create SSH executor
+	sshExec, err := executor.NewSSHExecutor(host.Address, host.User, host.Password, host.Key)
+	if err != nil {
+		logger.Errorf(err, "Failed to connect to %s", host.Address)
+		result.err = err
+		return result
+	}
+
+	// Create runner with SSH executor
+	r := runner.New(sshExec).WithDryRun(dryRun)
+
+	// Apply resources
+	results, err := r.Apply(ctx, m)
+
+	// Close connection
+	if closeErr := sshExec.Close(); closeErr != nil {
+		logger.Warnf("Error closing connection to %s: %v", host.Address, closeErr)
+	}
+
+	if err != nil {
+		logger.Errorf(err, "Apply failed on %s", host.Address)
+		result.err = err
+		return result
+	}
+
+	// Calculate summary
+	result.total, result.changed, result.failed = runner.Summary(results)
+
+	// Log result
+	if dryRun {
+		logger.Infof("[%s] Dry-run complete: total=%d would_change=%d failed=%d", host.Address, result.total, result.changed, result.failed)
+	} else {
+		logger.Infof("[%s] Complete: total=%d changed=%d failed=%d", host.Address, result.total, result.changed, result.failed)
+	}
+
+	if result.failed > 0 {
+		result.err = fmt.Errorf("%d resources failed", result.failed)
+	}
+
+	return result
 }
 
 // runVerifications executes verification commands for each successful host
@@ -223,5 +305,7 @@ func init() {
 	remoteCmd.Flags().BoolVar(&remoteDryRun, "dry-run", false, "show what would be changed without making changes")
 	remoteCmd.Flags().BoolVar(&skipVerify, "skip-verify", false, "skip verification checks after deployment")
 	remoteCmd.Flags().DurationVar(&remoteTimeout, "timeout", 30*time.Minute, "timeout for the entire operation")
+	remoteCmd.Flags().IntVarP(&parallelHosts, "parallel", "p", 1, "number of hosts to process in parallel (default: 1 = sequential)")
+	remoteCmd.Flags().BoolVar(&failFast, "fail-fast", false, "stop processing on first host failure (only with --parallel > 1)")
 	_ = remoteCmd.MarkFlagRequired("config")
 }

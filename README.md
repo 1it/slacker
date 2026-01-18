@@ -93,12 +93,27 @@ sudo ./slacker local -c manifest.yaml --timeout 20m
 Apply a manifest to remote hosts via SSH:
 
 ```bash
-# Apply to all hosts defined in manifest
+# Apply to all hosts defined in manifest (sequential)
 ./slacker remote -c manifest.yaml
 
 # Dry-run
 ./slacker remote -c manifest.yaml --dry-run
+
+# Process hosts in parallel (5 concurrent connections)
+./slacker remote -c manifest.yaml --parallel 5
+
+# Parallel with fail-fast (stop on first failure)
+./slacker remote -c manifest.yaml --parallel 10 --fail-fast
 ```
+
+#### Parallel Processing
+
+By default, hosts are processed sequentially. Use `--parallel` to process multiple hosts concurrently:
+
+- **`--parallel N`** - Process up to N hosts simultaneously (default: 1 = sequential)
+- **`--fail-fast`** - Stop processing all hosts when the first host fails (only effective with `--parallel > 1`)
+
+**Example**: Processing 20 hosts with parallelism=5 will create 5 concurrent SSH connections, completing in roughly 1/4 the time of sequential processing.
 
 ## SSH Authentication
 
